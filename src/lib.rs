@@ -1,172 +1,238 @@
-//! TTG (Trees That Grow) VDOM Core Module
+//! tola-vdom - Type-safe Virtual DOM with Phase-based Transformations
 //!
-//! Multi-phase type-safe architecture based on GATs:
+//! ## Core Concepts
 //!
-//! ## Core Modules
-//! - `phase`: Phase/PhaseData trait and phase definitions (Raw → Indexed → Processed → Rendered)
-//! - `node`: Node/Element/Text/Document types + FamilyExt
-//! - `family`: TagFamily trait (SVG, Link, Heading, Media, Other)
-//! - `attr`: Attribute system (Attrs type alias)
+//! **GAT-based Family System**: Elements are classified into families (Svg, Link, Heading, etc.)
+//! with compile-time type safety using Generic Associated Types.
 //!
-//! ## Transformation System
-//! - `transform`: Unified transformation module
-//!   - `Transform` trait: The only public API for phase transitions
-//!   - `Pipeline`: Fluent chain builder
-//!   - `Processor`: Indexed → Processed transformation
-//!   - `indexer`: Raw → Indexed (StableId generation, family identification)
-//!   - `render`: Processed → HTML (rendering)
+//! ## Modules
+//! - `core`: Core traits (`Family`, `Phase`, `PhaseExt`, `ElementExt`)
+//! - `families`: Built-in family definitions (Link, Heading, Svg, Media)
+//! - `node`: Node/Element/Text/Document types
+//! - `transform`: Phase transformations (Indexer, Processor)
+//! - `attr`: Attribute system
+//! - `algo`: Diff algorithms
 //!
-//! ## Algorithms
-//! - `diff`: VDOM diff algorithm (generates Patches)
-//! - `lcs`: Longest Common Subsequence (used by diff)
-//! - `id`: StableId (content-hash based identity)
-//!
-//! ## Conversion (feature-gated)
-//! - `convert::typst`: Typst HtmlDocument → Raw VDOM (feature = "typst")
-//! - `convert::markdown`: Markdown → Raw VDOM (planned, feature = "markdown")
-//! - `convert::html`: HTML string → Raw VDOM (planned, feature = "html-parser")
-//!
-//! # Usage
+//! ## Usage
 //!
 //! ```ignore
-//! use vdom::{Document, Raw, Indexed, Processed, Transform, Processor};
-//! use vdom::transform::Indexer;
+//! use tola_vdom::vdom;
+//! use tola_vdom::node::{Document, Element};
+//! use tola_vdom::transform::{Transform, Indexer, Processor};
+//! use tola_vdom::families::{LinkFamily, HeadingFamily};
 //!
-//! // Pipeline: Raw → Indexed → Processed → HTML
-//! let indexed = raw_doc.pipe(Indexer::new());
-//! let processed = indexed.pipe(Processor::new());
-//! let html = HtmlRenderer::new().render(processed);
+//! #[vdom::families]
+//! pub struct MySite {
+//!     link: LinkFamily,
+//!     heading: HeadingFamily,
+//! }
+//!
+//! // Create a raw document
+//! let doc: Document<MySite::Raw> = Document::new(Element::new("html"));
+//!
+//! // Transform through phases using pipe()
+//! let processed = doc
+//!     .pipe(make_indexer())
+//!     .pipe(make_processor());
 //! ```
 
-// Allow dead code at module level - this is a standalone design that will be
-// integrated when convert.rs is implemented
-#![allow(dead_code)]
-
-// Allow `::tola_vdom` to work inside the crate itself
 extern crate self as tola_vdom;
 
-pub mod attr;
-pub mod cache;
-pub mod capability;
-pub mod convert;
-pub mod diff;
-pub mod family;
-pub mod hash;
-pub mod id;
-pub mod lcs;
-#[macro_use]
-pub mod macros;
+// =============================================================================
+// Core modules
+// =============================================================================
+
+/// Core traits: Family, Phase, PhaseExt, ElementExt, HasStableId
+pub mod core;
+
+/// Built-in family definitions
+pub mod families;
+
+/// Node types: Document, Element, Node, Text
 pub mod node;
-pub mod phase;
-pub mod span;
+
+/// Phase transformations: Indexer, Processor, Transform
 pub mod transform;
 
+/// Attribute types
+pub mod attr;
+
+/// Stable identity for diffing
+pub mod id;
+
+/// Source span information
+pub mod span;
+
+/// Algorithms: diff, myers
+pub mod algo;
+
+/// Error types
+pub mod error;
+
+/// Prelude for common imports
+pub mod prelude;
+
+/// HTML rendering
+pub mod render;
+
+/// Serialization support
+pub mod serialize;
+
+/// Cache types for hot reload
+pub mod cache;
+
 // =============================================================================
-// Re-exports for public API
+// Re-exports
 // =============================================================================
 
-// These exports may appear unused within the crate but are part of the public API
-
-// Family system
-#[allow(unused_imports)]
-pub use family::{
-    FamilyKind, HeadingFamily, HeadingIndexedData, HeadingProcessedData, LinkFamily,
-    LinkIndexedData, LinkProcessedData, LinkType, MediaFamily, MediaIndexedData,
-    MediaProcessedData, MediaType, OtherFamily, SvgFamily, SvgIndexedData, SvgProcessedData,
-    TagFamily,
+// Core traits
+pub use crate::core::{
+    Family, Phase, PhaseExt, ElementExt, HasStableId, ExtractFamily,
+    FamilyData, FamilySet, NoneFamily, NoneIndexed,
 };
-
-// Transform system (unified API)
-#[allow(unused_imports)]
-pub use transform::{process_family_ext, IdentityTransform, Pipeline, Processor, Transform};
 
 // Node types
-#[allow(unused_imports)]
-pub use node::{Document, Element, FamilyExt, HasFamilyData, Node, Stats, Text};
+pub use node::{Document, Element, Node, Text, TextKind, Children};
 
-// Phase types
-#[allow(unused_imports)]
-pub use phase::{
-    Indexed, IndexedDocExt, IndexedElemExt, IndexedTextExt, Phase, PhaseData, Processed,
-    ProcessedDocExt, ProcessedElemExt, Raw, RawDocExt, RawElemExt, RawTextExt,
-    Rendered, RenderedDocExt,
-};
+// Transform
+pub use transform::{IndexStats, Indexer, Pipeline, Processor, Transform};
 
-// Source span abstraction
-#[allow(unused_imports)]
-pub use span::SourceSpan;
+#[cfg(feature = "async")]
+pub use transform::{AsyncPipeline, ValidateError, ValidateErrors, Validator};
 
-// Conversion (requires typst feature)
-#[cfg(feature = "typst")]
-#[allow(unused_imports)]
-pub use convert::{from_typst_html, from_typst_html_with_meta};
+// Attribute types
+pub use attr::{Attrs, AttrKey, AttrValue, Tag, TextContent};
 
 // Identity
-#[allow(unused_imports)]
 pub use id::{PageSeed, StableId};
 
-// Diff algorithm
-#[allow(unused_imports)]
-pub use diff::{diff, DiffResult, DiffStats, Patch};
-#[allow(unused_imports)]
-pub use lcs::{diff_sequences, Edit, LcsResult, LcsStats};
+// Algorithms
+pub use algo::StableHasher;
 
-// Cache
-pub use cache::{CacheKey, VdomCache};
+// Span
+pub use span::SourceSpan;
 
-// Hash utilities
-pub use hash::StableHasher;
+// Error types
+pub use error::{VdomError, VdomResult};
+
+// Cache types
+pub use cache::{CacheEntry, CacheKey, SharedVdomCache, VdomCache};
+
+// Re-export rkyv for proc macros (only available with cache feature)
+#[cfg(feature = "cache")]
+pub use rkyv;
+
+// Proc macros for custom families
+#[cfg(feature = "macros")]
+pub use tola_vdom_macros as vdom;
 
 // =============================================================================
-// High-level API for compilation pipeline integration
+// Tests
 // =============================================================================
 
-#[cfg(feature = "typst")]
-use transform::{HtmlRenderer, Indexer};
+#[cfg(all(test, feature = "macros"))]
+mod tests {
+    use super::*;
+    use crate::core::ExtractFamily;
+    use crate::families::{LinkFamily, HeadingFamily, SvgFamily, MediaFamily};
+    use crate::families::link::LinkRaw;
+    use crate::families::heading::HeadingRaw;
 
-/// Result of VDOM compilation
-#[derive(Debug)]
-pub struct VdomCompileResult {
-    /// Generated HTML bytes
-    pub html: Vec<u8>,
-    /// Processing statistics
-    pub stats: ProcessedDocExt,
+    #[vdom::families]
+    pub struct TestSite {
+        link: LinkFamily,
+        heading: HeadingFamily,
+        svg: SvgFamily,
+        media: MediaFamily,
+    }
+
+    #[test]
+    fn test_macro_generates_phases() {
+        use crate::core::Phase;
+        assert!(TestSite::Raw::NAME.contains("TestSite"));
+        assert!(TestSite::Indexed::NAME.contains("TestSite"));
+        assert!(TestSite::Processed::NAME.contains("TestSite"));
+    }
+
+    #[test]
+    fn test_macro_generates_ext_enums() {
+        let raw_ext = TestSite::RawExt::Link(Default::default());
+        assert_eq!(raw_ext.family_name(), "link");
+
+        let raw_ext = TestSite::RawExt::Heading(Default::default());
+        assert_eq!(raw_ext.family_name(), "heading");
+
+        let raw_ext = TestSite::RawExt::None;
+        assert_eq!(raw_ext.family_name(), "none");
+    }
+
+    #[test]
+    fn test_index_ext_preserves_family_data() {
+        let raw_ext = TestSite::RawExt::Link(LinkRaw::new("https://example.com"));
+        let indexed_ext = TestSite::index_ext(raw_ext, StableId::from_raw(123));
+
+        match &indexed_ext {
+            TestSite::IndexedExt::Link(data) => {
+                assert_eq!(data.stable_id().as_raw(), 123);
+                assert_eq!(data.href.as_deref(), Some("https://example.com"));
+            }
+            _ => panic!("Expected Link variant"),
+        }
+    }
+
+    #[test]
+    fn test_process_ext_transforms_data() {
+        let raw_ext = TestSite::RawExt::Link(LinkRaw::new("https://example.com"));
+        let indexed_ext = TestSite::index_ext(raw_ext, StableId::from_raw(456));
+        let processed_ext = TestSite::process_ext(&indexed_ext);
+
+        match &processed_ext {
+            TestSite::ProcessedExt::Link(data) => {
+                assert_eq!(data.stable_id().as_raw(), 456);
+                assert!(data.is_external);
+            }
+            _ => panic!("Expected Link variant"),
+        }
+    }
+
+    #[test]
+    fn test_family_identification() {
+        assert_eq!(TestSite::identify("a", &Attrs::new()), "link");
+        assert_eq!(TestSite::identify("h1", &Attrs::new()), "heading");
+        assert_eq!(TestSite::identify("svg", &Attrs::new()), "svg");
+        assert_eq!(TestSite::identify("img", &Attrs::new()), "media");
+        assert_eq!(TestSite::identify("div", &Attrs::new()), "none");
+    }
+
+    #[test]
+    fn test_extract_family_type_safe_access() {
+        let raw_ext = TestSite::RawExt::Link(LinkRaw::new("https://example.com"));
+        let indexed_ext = TestSite::index_ext(raw_ext, StableId::from_raw(100));
+
+        if let Some(link_data) = ExtractFamily::<LinkFamily>::get(&indexed_ext) {
+            assert_eq!(link_data.href.as_deref(), Some("https://example.com"));
+            assert_eq!(link_data.stable_id().as_raw(), 100);
+        } else {
+            panic!("Expected Link family");
+        }
+
+        let heading_data = ExtractFamily::<HeadingFamily>::get(&indexed_ext);
+        assert!(heading_data.is_none());
+    }
+
+    #[test]
+    fn test_extract_family_all_phases() {
+        let raw_ext = TestSite::RawExt::Heading(HeadingRaw::with_id(2, "my-heading"));
+        let heading_raw = ExtractFamily::<HeadingFamily>::get(&raw_ext).unwrap();
+        assert_eq!(heading_raw.level, 2);
+
+        let indexed_ext = TestSite::index_ext(raw_ext, StableId::from_raw(300));
+        let heading_indexed = ExtractFamily::<HeadingFamily>::get(&indexed_ext).unwrap();
+        assert_eq!(heading_indexed.level, 2);
+        assert_eq!(heading_indexed.original_id.as_deref(), Some("my-heading"));
+
+        let processed_ext = TestSite::process_ext(&indexed_ext);
+        let heading_processed = ExtractFamily::<HeadingFamily>::get(&processed_ext).unwrap();
+        assert_eq!(heading_processed.anchor_id, "my-heading");
+    }
 }
-
-/// Compile a typst HtmlDocument to HTML bytes using the VDOM pipeline.
-///
-/// This is the main entry point for integrating VDOM with the compilation pipeline.
-///
-/// # Pipeline
-///
-/// 1. `from_typst_html()` - Convert typst HtmlDocument to Raw VDOM
-/// 2. `Indexer` - Transform Raw → Indexed (assign StableIds, identify families)
-/// 3. `Processor` - Transform Indexed → Processed (prepare for rendering)
-/// 4. `HtmlRenderer` - Render Processed → HTML bytes
-///
-/// # Usage
-///
-/// ```ignore
-/// let doc_result = typst_lib::compile_document(path, root, "tola-meta")?;
-/// let result = vdom::compile_to_html(&doc_result.document);
-/// fs::write(output_path, &result.html)?;
-/// ```
-#[cfg(feature = "typst")]
-pub fn compile_to_html(document: &typst_batch::typst_html::HtmlDocument) -> VdomCompileResult {
-    use transform::Transform;
-
-    // Raw phase: convert from typst
-    let raw_doc = from_typst_html(document);
-
-    // Transform through pipeline
-    let indexed_doc = Indexer::new().transform(raw_doc);
-    let processed_doc = Processor::new().transform(indexed_doc);
-    let stats = processed_doc.ext.clone();
-
-    // Render to HTML
-    let html = HtmlRenderer::new().render(processed_doc);
-
-    VdomCompileResult { html, stats }
-}
-
-

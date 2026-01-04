@@ -1,246 +1,255 @@
-//! Document type and related utilities
-//!
-//! The root container for VDOM trees, with query and traversal APIs.
+//! Document type for the new PhaseExt-based system.
 
-use crate::family::FamilyKind;
-use crate::phase::PhaseData;
+use crate::core::PhaseExt;
 
 use super::{Element, Node};
 
-// =============================================================================
-// Document<P>
-// =============================================================================
-
-/// Root document container
+/// Root document container.
 #[derive(Debug, Clone)]
-pub struct Document<P: PhaseData> {
-    /// Root element (typically <html> or a wrapper)
+pub struct Document<P: PhaseExt> {
+    /// Root element
     pub root: Element<P>,
-    /// Document-level extension data (metadata, stats)
-    pub ext: P::DocExt,
+    /// Phase-specific metadata
+    pub meta: P::DocExt,
 }
 
-impl<P: PhaseData> Document<P> {
-    /// Create a new document with a root element
+impl<P: PhaseExt> Document<P> {
+    /// Create document with root element.
     pub fn new(root: Element<P>) -> Self {
         Self {
             root,
-            ext: P::DocExt::default(),
+            meta: P::DocExt::default(),
         }
     }
 
-    /// Get the phase name for debugging
+    /// Create document with explicit metadata.
+    pub fn with_meta(root: Element<P>, meta: P::DocExt) -> Self {
+        Self { root, meta }
+    }
+
+    /// Get phase name.
     pub fn phase_name(&self) -> &'static str {
         P::NAME
     }
 
-    // ─────────────────────────────────────────────────────────────────────────
-    // Query API (v8)
-    // ─────────────────────────────────────────────────────────────────────────
+    // -------------------------------------------------------------------------
+    // Query API
+    // -------------------------------------------------------------------------
 
-    /// Find first element matching predicate (depth-first search)
-    pub fn find_element<F>(&self, predicate: F) -> Option<&Element<P>>
+    /// Find first element matching predicate (DFS).
+    pub fn find<F>(&self, pred: F) -> Option<&Element<P>>
     where
         F: Fn(&Element<P>) -> bool,
     {
-        Self::find_in_element(&self.root, &predicate)
+        Self::find_in(&self.root, &pred)
     }
 
-    fn find_in_element<'a, F>(elem: &'a Element<P>, predicate: &F) -> Option<&'a Element<P>>
+    fn find_in<'a, F>(elem: &'a Element<P>, pred: &F) -> Option<&'a Element<P>>
     where
         F: Fn(&Element<P>) -> bool,
     {
-        if predicate(elem) {
+        if pred(elem) {
             return Some(elem);
         }
         for child in &elem.children {
-            if let Some(child_elem) = child.as_element()
-                && let Some(found) = Self::find_in_element(child_elem, predicate)
-            {
-                return Some(found);
+            if let Some(e) = child.as_element() {
+                if let Some(found) = Self::find_in(e, pred) {
+                    return Some(found);
+                }
             }
         }
         None
     }
 
-    /// Find all elements matching predicate
-    pub fn find_all<F>(&self, predicate: F) -> Vec<&Element<P>>
+    /// Find first element matching predicate (mutable).
+    pub fn find_mut<F>(&mut self, pred: F) -> Option<&mut Element<P>>
+    where
+        F: Fn(&Element<P>) -> bool + Copy,
+    {
+        Self::find_in_mut(&mut self.root, pred)
+    }
+
+    fn find_in_mut<F>(elem: &mut Element<P>, pred: F) -> Option<&mut Element<P>>
+    where
+        F: Fn(&Element<P>) -> bool + Copy,
+    {
+        if pred(elem) {
+            return Some(elem);
+        }
+        for child in &mut elem.children {
+            if let Some(e) = child.as_element_mut() {
+                if let Some(found) = Self::find_in_mut(e, pred) {
+                    return Some(found);
+                }
+            }
+        }
+        None
+    }
+
+    /// Find all elements matching predicate.
+    pub fn find_all<F>(&self, pred: F) -> Vec<&Element<P>>
     where
         F: Fn(&Element<P>) -> bool,
     {
         let mut results = Vec::new();
-        Self::collect_elements(&self.root, &predicate, &mut results);
+        Self::collect(&self.root, &pred, &mut results);
         results
     }
 
-    fn collect_elements<'a, F>(elem: &'a Element<P>, predicate: &F, results: &mut Vec<&'a Element<P>>)
+    fn collect<'a, F>(elem: &'a Element<P>, pred: &F, out: &mut Vec<&'a Element<P>>)
     where
         F: Fn(&Element<P>) -> bool,
     {
-        if predicate(elem) {
-            results.push(elem);
+        if pred(elem) {
+            out.push(elem);
         }
         for child in &elem.children {
-            if let Some(child_elem) = child.as_element() {
-                Self::collect_elements(child_elem, predicate, results);
+            if let Some(e) = child.as_element() {
+                Self::collect(e, pred, out);
             }
         }
     }
 
-    /// Check if any element matches predicate
-    pub fn has_element<F>(&self, predicate: F) -> bool
+    /// Check if any element matches.
+    pub fn any<F>(&self, pred: F) -> bool
     where
         F: Fn(&Element<P>) -> bool,
     {
-        self.find_element(predicate).is_some()
+        self.find(pred).is_some()
     }
 
-    /// Count total elements in document
+    /// Count total elements.
     pub fn element_count(&self) -> usize {
-        Self::count_elements(&self.root)
+        Self::count(&self.root)
     }
 
-    fn count_elements(elem: &Element<P>) -> usize {
-        let mut count = 1; // this element
+    fn count(elem: &Element<P>) -> usize {
+        let mut n = 1;
         for child in &elem.children {
-            if let Some(child_elem) = child.as_element() {
-                count += Self::count_elements(child_elem);
+            if let Some(e) = child.as_element() {
+                n += Self::count(e);
             }
         }
-        count
+        n
     }
 
-    /// Iterate over all elements (depth-first)
-    pub fn iter_elements(&self) -> impl Iterator<Item = &Element<P>> {
-        ElementIterator::new(&self.root)
+    /// Iterate all elements (DFS).
+    pub fn elements(&self) -> ElementIter<'_, P> {
+        ElementIter::new(&self.root)
     }
 
-    // ─────────────────────────────────────────────────────────────────────────
-    // Mutable query API
-    // ─────────────────────────────────────────────────────────────────────────
+    // -------------------------------------------------------------------------
+    // Traversal
+    // -------------------------------------------------------------------------
 
-    /// Find first element matching predicate (mutable)
-    pub fn find_element_mut<F>(&mut self, predicate: F) -> Option<&mut Element<P>>
-    where
-        F: Fn(&Element<P>) -> bool + Copy,
-    {
-        Self::find_in_element_mut(&mut self.root, predicate)
-    }
-
-    fn find_in_element_mut<F>(elem: &mut Element<P>, predicate: F) -> Option<&mut Element<P>>
-    where
-        F: Fn(&Element<P>) -> bool + Copy,
-    {
-        if predicate(elem) {
-            return Some(elem);
-        }
-        for child in &mut elem.children {
-            if let Some(child_elem) = child.as_element_mut()
-                && let Some(found) = Self::find_in_element_mut(child_elem, predicate)
-            {
-                return Some(found);
-            }
-        }
-        None
-    }
-
-    // ─────────────────────────────────────────────────────────────────────────
-    // Closure-based traversal API
-    // ─────────────────────────────────────────────────────────────────────────
-
-    /// Visit all elements with a closure (read-only)
-    pub fn for_each_element<F>(&self, mut f: F)
+    /// Visit each element with a closure.
+    pub fn for_each<F>(&self, mut f: F)
     where
         F: FnMut(&Element<P>),
     {
-        Self::visit_elements_recursive(&self.root, &mut f);
+        Self::visit(&self.root, &mut f);
     }
 
-    fn visit_elements_recursive<F>(elem: &Element<P>, f: &mut F)
+    fn visit<F>(elem: &Element<P>, f: &mut F)
     where
         F: FnMut(&Element<P>),
     {
         f(elem);
         for child in &elem.children {
-            if let Some(child_elem) = child.as_element() {
-                Self::visit_elements_recursive(child_elem, f);
+            if let Some(e) = child.as_element() {
+                Self::visit(e, f);
             }
         }
     }
 
-    /// Visit all elements with a closure (mutable)
-    pub fn for_each_element_mut<F>(&mut self, mut f: F)
+    /// Visit each element mutably.
+    pub fn for_each_mut<F>(&mut self, mut f: F)
     where
         F: FnMut(&mut Element<P>),
     {
-        Self::visit_elements_mut_recursive(&mut self.root, &mut f);
+        Self::visit_mut(&mut self.root, &mut f);
     }
 
-    fn visit_elements_mut_recursive<F>(elem: &mut Element<P>, f: &mut F)
+    fn visit_mut<F>(elem: &mut Element<P>, f: &mut F)
     where
         F: FnMut(&mut Element<P>),
     {
         f(elem);
         for child in &mut elem.children {
-            if let Some(child_elem) = child.as_element_mut() {
-                Self::visit_elements_mut_recursive(child_elem, f);
+            if let Some(e) = child.as_element_mut() {
+                Self::visit_mut(e, f);
             }
         }
     }
 
-    /// Collect statistics about the document
-    pub fn collect_stats(&self) -> Stats {
-        let mut stats = Stats::default();
-        Self::collect_stats_recursive(&self.root, &mut stats);
-        stats
+    // -------------------------------------------------------------------------
+    // Family-based traversal
+    // -------------------------------------------------------------------------
+
+    /// Find all elements of a specific family (type-safe).
+    ///
+    /// Uses the `ExtractFamily` trait for compile-time type checking.
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// let links = doc.find_by::<TolaSite::FamilyKind::Link>();
+    /// ```
+    pub fn find_by<F: crate::core::Family>(&self) -> Vec<&Element<P>>
+    where
+        P::Ext: crate::core::ExtractFamily<F>,
+    {
+        self.find_all(|elem| crate::core::ExtractFamily::<F>::get(&elem.ext).is_some())
     }
 
-    fn collect_stats_recursive(elem: &Element<P>, stats: &mut Stats) {
-        stats.element_count += 1;
-
-        // Count by family
-        match elem.ext.kind() {
-            FamilyKind::Svg => stats.svg_count += 1,
-            FamilyKind::Link => stats.link_count += 1,
-            FamilyKind::Heading => stats.heading_count += 1,
-            FamilyKind::Media => stats.media_count += 1,
-            FamilyKind::Other => {}
-        }
-
-        // Recurse into children
-        for child in &elem.children {
-            match child {
-                Node::Element(e) => Self::collect_stats_recursive(e, stats),
-                Node::Text(_) => stats.text_count += 1,
+    /// Modify elements of a specific family (type-safe).
+    ///
+    /// Uses the `ExtractFamily` trait for compile-time type checking.
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// doc.modify_by::<TolaSite::FamilyKind::Link, _>(|elem| {
+    ///     // modify link elements
+    /// });
+    /// ```
+    pub fn modify_by<F: crate::core::Family, Func>(&mut self, mut f: Func)
+    where
+        P::Ext: crate::core::ExtractFamily<F>,
+        Func: FnMut(&mut Element<P>),
+    {
+        self.for_each_mut(|elem| {
+            if crate::core::ExtractFamily::<F>::get(&elem.ext).is_some() {
+                f(elem);
             }
-        }
+        });
     }
 }
 
 // =============================================================================
-// ElementIterator - depth-first element traversal
+// ElementIter
 // =============================================================================
 
-/// Depth-first iterator over elements
-pub struct ElementIterator<'a, P: PhaseData> {
+/// DFS iterator over elements.
+pub struct ElementIter<'a, P: PhaseExt> {
     stack: Vec<&'a Element<P>>,
 }
 
-impl<'a, P: PhaseData> ElementIterator<'a, P> {
+impl<'a, P: PhaseExt> ElementIter<'a, P> {
     fn new(root: &'a Element<P>) -> Self {
         Self { stack: vec![root] }
     }
 }
 
-impl<'a, P: PhaseData> Iterator for ElementIterator<'a, P> {
+impl<'a, P: PhaseExt> Iterator for ElementIter<'a, P> {
     type Item = &'a Element<P>;
 
     fn next(&mut self) -> Option<Self::Item> {
         let elem = self.stack.pop()?;
-        // Push children in reverse order so they're visited left-to-right
+        // Push children in reverse for correct DFS order
         for child in elem.children.iter().rev() {
-            if let Some(child_elem) = child.as_element() {
-                self.stack.push(child_elem);
+            if let Some(e) = child.as_element() {
+                self.stack.push(e);
             }
         }
         Some(elem)
@@ -248,38 +257,38 @@ impl<'a, P: PhaseData> Iterator for ElementIterator<'a, P> {
 }
 
 // =============================================================================
-// Stats - document statistics
+// Stats
 // =============================================================================
 
-/// Document statistics collected from traversal
-#[derive(Debug, Default, Clone, PartialEq, Eq)]
+/// Document statistics.
+#[derive(Debug, Clone, Default)]
 pub struct Stats {
-    pub svg_count: usize,
-    pub link_count: usize,
-    pub heading_count: usize,
-    pub media_count: usize,
-    pub text_count: usize,
-    pub element_count: usize,
+    pub elements: usize,
+    pub text_nodes: usize,
+    pub max_depth: usize,
 }
 
-impl Stats {
-    /// Check if document has any SVG elements
-    pub fn has_svg(&self) -> bool {
-        self.svg_count > 0
+impl<P: PhaseExt> Document<P> {
+    /// Calculate document statistics.
+    pub fn stats(&self) -> Stats {
+        let mut stats = Stats::default();
+        Self::calc_stats(&self.root, 1, &mut stats);
+        stats
     }
 
-    /// Check if document has any links
-    pub fn has_links(&self) -> bool {
-        self.link_count > 0
+    fn calc_stats(elem: &Element<P>, depth: usize, stats: &mut Stats) {
+        stats.elements += 1;
+        stats.max_depth = stats.max_depth.max(depth);
+        for child in &elem.children {
+            match child {
+                Node::Element(e) => Self::calc_stats(e, depth + 1, stats),
+                Node::Text(_) => stats.text_nodes += 1,
+            }
+        }
     }
+}
 
-    /// Check if document has any headings
-    pub fn has_headings(&self) -> bool {
-        self.heading_count > 0
-    }
-
-    /// Total family-specific elements (svg + link + heading + media)
-    pub fn family_element_count(&self) -> usize {
-        self.svg_count + self.link_count + self.heading_count + self.media_count
-    }
+#[cfg(test)]
+mod tests {
+    // Tests will use macro-generated phases
 }

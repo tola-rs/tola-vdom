@@ -1,22 +1,26 @@
 [package]
 name = "tola-vdom"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2024"
 rust-version = "1.85"
 license = "MIT"
 description = "Virtual DOM for HTML/XML: type-safe, multi-phase, extensible"
 keywords = ["vdom", "html", "type-safe", "extensible", "transform"]
 categories = ["parsing", "web-programming"]
-repository = "https://github.com/tola-ssg/tola-vdom"
+repository = "https://github.com/tola-rs/tola-vdom"
 
 [features]
-default = ["typst"]
-serde = ["dep:serde"]
+default = ["cache", "macros", "async"]
+# Enable rayon for parallel batch operations (e.g., transform multiple documents)
+# Note: Single document transformation is inherently sequential due to tree traversal
 parallel = ["dep:rayon"]
-hotreload = ["dep:tokio", "dep:tungstenite"]
-rkyv = ["dep:rkyv"]
-# Typst integration - convert from typst HtmlDocument
-typst = ["dep:typst-batch"]
+# Enable rkyv zero-copy serialization for persistent caching
+cache = ["dep:rkyv"]
+# Enable proc macros for custom families (requires cache for rkyv derives)
+macros = ["cache", "dep:tola-vdom-macros"]
+# Enable async pipeline support (Check trait, Pipeline::check, Pipeline::finish)
+# Uses futures-util for concurrent execution (no runtime dependency)
+async = ["dep:futures-util"]
 
 [dependencies]
 blake3 = "1.8"
@@ -24,14 +28,15 @@ smallvec = { version = "1.13", features = ["union", "const_generics"] }
 compact_str = "0.8"
 paste = "1.0"
 rustc-hash = "2.1"
-tola-vdom-macros = { path = "macros" }
-
-# Typst integration (optional, via typst-batch)
-typst-batch = { path = "../../typst-batch", features = ["svg"], optional = true }
+parking_lot = "0.12"
+thiserror = "2.0"
 
 # Optional dependencies
-serde = { version = "1.0", features = ["derive"], optional = true }
 rayon = { version = "1.10", optional = true }
-tokio = { version = "1", features = ["sync"], optional = true }
-tungstenite = { version = "0.27", optional = true }
-rkyv = { version = "0.8", optional = true }
+rkyv = { version = "0.8", optional = true, features = ["alloc"] }
+tola-vdom-macros = { version = "0.2.0", optional = true }
+futures-util = { version = "0.3", optional = true, default-features = false, features = ["alloc"] }
+
+[dev-dependencies]
+static_assertions = "1.1"
+tokio = { version = "1", features = ["rt", "macros"] }

@@ -54,7 +54,10 @@ impl StableHasher {
     #[inline]
     pub fn finish(self) -> u64 {
         let hash = self.inner.finalize();
-        let bytes: [u8; 8] = hash.as_bytes()[..8].try_into().unwrap();
+        // SAFETY: blake3 always produces 32 bytes, we take first 8
+        let bytes: [u8; 8] = hash.as_bytes()[..8]
+            .try_into()
+            .expect("blake3 hash is always 32 bytes");
         u64::from_le_bytes(bytes)
     }
 }

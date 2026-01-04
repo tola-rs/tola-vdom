@@ -13,7 +13,7 @@
 /// Source location span abstraction
 ///
 /// When `typst` feature is enabled, this wraps `typst::syntax::Span`.
-/// Otherwise, it's a simple wrapper around Option<u64>.
+/// Otherwise, it's a simple wrapper around `Option<u64>`.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct SourceSpan {
     /// Internal representation
@@ -44,29 +44,3 @@ impl SourceSpan {
     }
 }
 
-#[cfg(feature = "typst")]
-impl From<typst_batch::typst::syntax::Span> for SourceSpan {
-    fn from(span: typst_batch::typst::syntax::Span) -> Self {
-        if span.is_detached() {
-            Self::detached()
-        } else {
-            // typst::syntax::Span internally stores a NonZero<u64>
-            // We extract it via the into_raw() method
-            Self { inner: Some(span.into_raw().get()) }
-        }
-    }
-}
-
-#[cfg(feature = "typst")]
-impl SourceSpan {
-    /// Convert back to typst::syntax::Span (if possible)
-    ///
-    /// Returns detached Span if this SourceSpan is detached.
-    pub fn to_typst_span(&self) -> typst_batch::typst::syntax::Span {
-        use typst_batch::typst::syntax::Span;
-        match self.inner.and_then(std::num::NonZero::new) {
-            Some(raw) => Span::from_raw(raw),
-            None => Span::detached(),
-        }
-    }
-}

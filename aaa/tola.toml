@@ -1,0 +1,73 @@
+[base]
+title = ""
+author = "<YOUR_NAME>"
+email = "user@noreply.tola"
+description = ""
+language = "zh-Hans"
+copyright = ""
+
+[build]
+content = "content"
+output = "public"
+assets = "assets"
+deps = [
+    "templates",
+    "utils",
+]
+data = "_data"
+minify = true
+
+[build.rss]
+enable = false
+path = "feed.xml"
+
+[build.sitemap]
+enable = false
+path = "sitemap.xml"
+
+[build.slug]
+path = "safe"
+fragment = "full"
+separator = "dash"
+case = "lower"
+
+[build.typst.svg]
+extract_type = "embedded"
+inline_max_size = "20KB"
+dpi = 96.0
+
+[build.css]
+auto_enhance = true
+
+[build.css.tailwind]
+enable = false
+command = ["tailwindcss"]
+
+[build.meta]
+label = "tola-meta"
+
+[build.head]
+styles = []
+scripts = []
+elements = []
+
+[serve]
+interface = "127.0.0.1"
+port = 5277
+watch = true
+
+[deploy]
+provider = "github"
+force = false
+
+[deploy.github]
+url = "https://github.com/alice/alice.github.io"
+branch = "main"
+
+[deploy.cloudflare]
+provider = "github"
+
+[deploy.vercel]
+provider = "github"
+
+[extra]

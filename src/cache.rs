@@ -1,232 +1,206 @@
-//! VDOM Cache - In-memory storage for diffing
+//! VDOM Cache types for hot reload.
 //!
-//! Stores `Document<Indexed>` keyed by URL path (e.g., "/blog/hello").
-//! Each consumer (watch.rs, actor) owns its own cache instance.
-//!
-//! # Type Safety
-//!
-//! The [`CacheKey`] type ensures all cache keys are normalized consistently.
-//! This prevents bugs from trailing slashes or other URL variations.
+//! Provides shared cache for indexed documents.
 
-use std::borrow::Borrow;
-use std::fmt;
-use std::hash::Hash;
+use std::sync::Arc;
 
+use parking_lot::RwLock;
 use rustc_hash::FxHashMap;
 
-use super::{Document, Indexed};
+use crate::core::PhaseExt;
+use crate::node::Document;
 
 // =============================================================================
-// CacheKey - Type-safe normalized URL path
+// Cache Key
 // =============================================================================
 
-/// A normalized URL path used as cache key.
-///
-/// This type guarantees that the URL is normalized (no trailing slash,
-/// starts with `/`, etc.) at construction time, preventing cache key
-/// mismatch bugs.
-///
-/// # Example
-///
-/// ```ignore
-/// let key1 = CacheKey::new("/blog/post/");
-/// let key2 = CacheKey::new("/blog/post");
-/// assert_eq!(key1, key2); // Both normalize to "/blog/post"
-/// ```
-#[derive(Clone, PartialEq, Eq, Hash)]
-pub struct CacheKey(String);
+/// Cache key for URL-based lookup.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct CacheKey(Arc<str>);
 
 impl CacheKey {
     /// Create a new cache key from a URL path.
-    ///
-    /// The URL is automatically normalized:
-    /// - Removes trailing slash (except root)
-    /// - Ensures starts with `/`
-    /// - Removes query string and fragment
-    /// - Collapses multiple slashes
-    pub fn new(url_path: impl AsRef<str>) -> Self {
-        Self(Self::normalize(url_path.as_ref()))
+    pub fn new(url: &str) -> Self {
+        Self(Arc::from(url))
     }
 
-    /// Normalize a URL path for consistent cache keys.
-    fn normalize(url: &str) -> String {
-        // Remove fragment and query string
-        let path = url
-            .split('#').next().unwrap_or(url)
-            .split('?').next().unwrap_or(url);
-
-        let mut path = path.to_string();
-
-        // Collapse multiple slashes
-        while path.contains("//") {
-            path = path.replace("//", "/");
-        }
-
-        // Ensure starts with /
-        if !path.starts_with('/') {
-            path = format!("/{}", path);
-        }
-
-        // Remove trailing slash (except for root)
-        if path.len() > 1 && path.ends_with('/') {
-            path.pop();
-        }
-
-        path
-    }
-
-    /// Get the normalized URL path as a string slice.
+    /// Get the URL path as a string slice.
     pub fn as_str(&self) -> &str {
         &self.0
     }
-
-    /// Convert into the inner String.
-    pub fn into_inner(self) -> String {
-        self.0
-    }
 }
 
-impl fmt::Debug for CacheKey {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "CacheKey({:?})", self.0)
-    }
-}
-
-impl fmt::Display for CacheKey {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+impl std::fmt::Display for CacheKey {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{}", self.0)
     }
 }
 
-impl AsRef<str> for CacheKey {
-    fn as_ref(&self) -> &str {
-        &self.0
-    }
+// =============================================================================
+// Cache Entry
+// =============================================================================
+
+/// A cached VDOM document with version tracking.
+#[derive(Debug, Clone)]
+pub struct CacheEntry<P: PhaseExt> {
+    /// The cached document.
+    pub doc: Document<P>,
+    /// Version number for change detection.
+    pub version: u64,
 }
 
-impl Borrow<str> for CacheKey {
-    fn borrow(&self) -> &str {
-        &self.0
+impl<P: PhaseExt> CacheEntry<P> {
+    /// Create a new cache entry with version 0.
+    pub fn new(doc: Document<P>) -> Self {
+        Self { doc, version: 0 }
     }
-}
 
-impl From<&str> for CacheKey {
-    fn from(s: &str) -> Self {
-        Self::new(s)
+    /// Create a new cache entry with default version.
+    pub fn with_default_version(doc: Document<P>) -> Self {
+        Self::new(doc)
     }
-}
 
-impl From<String> for CacheKey {
-    fn from(s: String) -> Self {
-        Self::new(s)
+    /// Create a new cache entry with a specific version.
+    pub fn with_version(doc: Document<P>, version: u64) -> Self {
+        Self { doc, version }
     }
-}
 
-impl From<&String> for CacheKey {
-    fn from(s: &String) -> Self {
-        Self::new(s)
+    /// Increment the version and update the document.
+    pub fn update(&mut self, doc: Document<P>) {
+        self.doc = doc;
+        self.version += 1;
     }
 }
 
 // =============================================================================
-// VdomCache
+// VDOM Cache
 // =============================================================================
 
-/// VDOM cache - stores previous VDOM state for diffing
-#[derive(Debug, Default)]
-pub struct VdomCache {
-    /// Maps URL path to cached VDOM document
-    pages: FxHashMap<CacheKey, Document<Indexed>>,
+/// Non-thread-safe VDOM cache.
+pub type VdomCache<P> = FxHashMap<CacheKey, CacheEntry<P>>;
+
+/// Thread-safe shared VDOM cache.
+///
+/// Uses `parking_lot::RwLock` for better performance under contention.
+#[derive(Debug)]
+pub struct SharedVdomCache<P: PhaseExt> {
+    inner: Arc<RwLock<VdomCache<P>>>,
 }
 
-impl VdomCache {
-    /// Create a new empty cache
+impl<P: PhaseExt> Clone for SharedVdomCache<P> {
+    fn clone(&self) -> Self {
+        Self {
+            inner: Arc::clone(&self.inner),
+        }
+    }
+}
+
+impl<P: PhaseExt> Default for SharedVdomCache<P> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl<P: PhaseExt> SharedVdomCache<P> {
+    /// Create a new empty cache.
     pub fn new() -> Self {
-        Self::default()
+        Self {
+            inner: Arc::new(RwLock::new(FxHashMap::default())),
+        }
     }
 
-    /// Get cached VDOM for a cache key.
-    pub fn get(&self, key: &CacheKey) -> Option<&Document<Indexed>> {
-        self.pages.get(key)
+    /// Execute a closure with read access to the cache.
+    pub fn with_read<R>(&self, f: impl FnOnce(&VdomCache<P>) -> R) -> R {
+        let guard = self.inner.read();
+        f(&guard)
     }
 
-    /// Insert or update cached VDOM, returns the old value if any.
-    pub fn insert(
-        &mut self,
-        key: CacheKey,
-        doc: Document<Indexed>,
-    ) -> Option<Document<Indexed>> {
-        self.pages.insert(key, doc)
+    /// Execute a closure with write access to the cache.
+    pub fn with_write<R>(&self, f: impl FnOnce(&mut VdomCache<P>) -> R) -> R {
+        let mut guard = self.inner.write();
+        f(&mut guard)
     }
 
-    /// Remove a page from cache.
-    pub fn remove(&mut self, key: &CacheKey) -> Option<Document<Indexed>> {
-        self.pages.remove(key)
+    /// Get a clone of a cached entry.
+    pub fn get(&self, key: &CacheKey) -> Option<CacheEntry<P>>
+    where
+        P::Ext: Clone,
+        P::DocExt: Clone,
+        P::TextExt: Clone,
+    {
+        self.with_read(|c| c.get(key).cloned())
     }
 
-    /// Clear all cached pages
-    pub fn clear(&mut self) {
-        self.pages.clear();
+    /// Insert or update a cache entry.
+    pub fn insert(&self, key: CacheKey, entry: CacheEntry<P>) {
+        self.with_write(|c| {
+            c.insert(key, entry);
+        });
     }
 
-    /// Number of cached pages
+    /// Remove an entry from the cache.
+    pub fn remove(&self, key: &CacheKey) -> Option<CacheEntry<P>> {
+        self.with_write(|c| c.remove(key))
+    }
+
+    /// Check if the cache contains a key.
+    pub fn contains(&self, key: &CacheKey) -> bool {
+        self.with_read(|c| c.contains_key(key))
+    }
+
+    /// Get the number of entries in the cache.
     pub fn len(&self) -> usize {
-        self.pages.len()
+        self.with_read(|c| c.len())
     }
 
-    /// Check if cache is empty
+    /// Check if the cache is empty.
     pub fn is_empty(&self) -> bool {
-        self.pages.is_empty()
+        self.len() == 0
     }
 
-    /// Get all cached URL paths
-    pub fn keys(&self) -> impl Iterator<Item = &CacheKey> {
-        self.pages.keys()
+    /// Clear all entries from the cache.
+    pub fn clear(&self) {
+        self.with_write(|c| c.clear());
     }
 }
 
-#[cfg(test)]
+// =============================================================================
+// Tests
+// =============================================================================
+
+#[cfg(all(test, feature = "macros"))]
 mod tests {
     use super::*;
+    use crate::families::{HeadingFamily, LinkFamily, MediaFamily, SvgFamily};
+    use crate::node::Element;
+    use crate::vdom;
 
-    #[test]
-    fn test_cache_key_normalization() {
-        let key1 = CacheKey::new("/blog/post/");
-        let key2 = CacheKey::new("/blog/post");
-        let key3 = CacheKey::new("blog/post");
-
-        assert_eq!(key1, key2);
-        assert_eq!(key2, key3);
-        assert_eq!(key1.as_str(), "/blog/post");
+    #[vdom::families]
+    pub struct CacheTestSite {
+        link: LinkFamily,
+        heading: HeadingFamily,
+        svg: SvgFamily,
+        media: MediaFamily,
     }
 
     #[test]
-    fn test_cache_with_trailing_slash() {
-        use crate::Element;
-
-        let mut cache = VdomCache::new();
-        let root: Element<Indexed> = Element::new("html");
-        let doc = Document::new(root);
-
-        // Insert with trailing slash - CacheKey normalizes it
-        let key_with_slash = CacheKey::new("/blog/post/");
-        cache.insert(key_with_slash.clone(), doc.clone());
-
-        // Get with same key should work
-        assert!(cache.get(&key_with_slash).is_some());
-
-        // Get with key created without trailing slash should also work
-        // because CacheKey normalizes both to the same value
-        let key_without_slash = CacheKey::new("/blog/post");
-        assert!(cache.get(&key_without_slash).is_some());
+    fn test_cache_key() {
+        let key = CacheKey::new("/blog/post");
+        assert_eq!(key.as_str(), "/blog/post");
     }
 
     #[test]
-    fn test_cache_empty() {
-        let cache = VdomCache::new();
-        assert!(cache.is_empty());
-        assert_eq!(cache.len(), 0);
-        let key = CacheKey::new("/test");
-        assert!(cache.get(&key).is_none());
+    fn test_shared_cache() {
+        let cache: SharedVdomCache<CacheTestSite::Indexed> = SharedVdomCache::new();
+        let elem = Element::new("div");
+        let doc = Document::new(elem);
+        let entry = CacheEntry::new(doc);
+
+        cache.insert(CacheKey::new("/test"), entry);
+        assert!(cache.contains(&CacheKey::new("/test")));
+        assert_eq!(cache.len(), 1);
+
+        cache.remove(&CacheKey::new("/test"));
+        assert!(!cache.contains(&CacheKey::new("/test")));
     }
 }

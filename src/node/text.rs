@@ -1,65 +1,123 @@
-//! Text node type
-//!
-//! Simple text content nodes in the VDOM tree.
+//! Text node type for the new PhaseExt-based system.
 
-use crate::phase::PhaseData;
+use crate::attr::TextContent;
+use crate::core::PhaseExt;
+
+// =============================================================================
+// TextKind
+// =============================================================================
+
+/// Controls how text content is rendered.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+pub enum TextKind {
+    /// Standard text: HTML special characters are escaped.
+    /// Use for normal text content.
+    #[default]
+    Escaped,
+    /// Raw content: output as-is without escaping.
+    /// Use for trusted HTML/SVG/XML content.
+    Raw,
+}
 
 // =============================================================================
 // Text<P>
 // =============================================================================
 
-/// Text content node
+/// Text content node.
 #[derive(Debug, Clone)]
-pub struct Text<P: PhaseData> {
-    /// Text content
-    pub content: String,
-    /// Phase-specific extension data
+pub struct Text<P: PhaseExt> {
+    /// Text content (CompactString for efficient small text storage)
+    pub content: TextContent,
+    /// How this text should be rendered (escaped or raw)
+    pub kind: TextKind,
+    /// Phase-specific extension
     pub ext: P::TextExt,
 }
 
-impl<P: PhaseData> Text<P> {
-    /// Create a new text node
-    pub fn new(content: impl Into<String>) -> Self {
+impl<P: PhaseExt> Text<P> {
+    /// Create a new escaped text node.
+    pub fn new(content: impl Into<TextContent>) -> Self {
         Self {
             content: content.into(),
+            kind: TextKind::Escaped,
             ext: P::TextExt::default(),
         }
     }
 
-    /// Check if text content is empty
+    /// Create a raw (unescaped) text node.
+    ///
+    /// Use for trusted HTML/SVG content that should not be escaped.
+    pub fn raw(content: impl Into<TextContent>) -> Self {
+        Self {
+            content: content.into(),
+            kind: TextKind::Raw,
+            ext: P::TextExt::default(),
+        }
+    }
+
+    /// Create text node with explicit extension.
+    pub fn with_ext(content: impl Into<TextContent>, ext: P::TextExt) -> Self {
+        Self {
+            content: content.into(),
+            kind: TextKind::Escaped,
+            ext,
+        }
+    }
+
+    /// Create raw text node with explicit extension.
+    pub fn raw_with_ext(content: impl Into<TextContent>, ext: P::TextExt) -> Self {
+        Self {
+            content: content.into(),
+            kind: TextKind::Raw,
+            ext,
+        }
+    }
+
+    /// Create text node from another text node, preserving content and kind.
+    ///
+    /// Use when transforming text nodes between phases.
+    pub fn from_other<Q: PhaseExt>(other: Text<Q>, ext: P::TextExt) -> Self {
+        Self {
+            content: other.content,
+            kind: other.kind,
+            ext,
+        }
+    }
+
+    /// Create text node from another text node with default ext.
+    ///
+    /// Use when transforming to phases with `TextExt = ()`.
+    pub fn from_other_default<Q: PhaseExt>(other: Text<Q>) -> Self {
+        Self {
+            content: other.content,
+            kind: other.kind,
+            ext: P::TextExt::default(),
+        }
+    }
+
+    /// Check if this is a raw (unescaped) text node.
+    pub fn is_raw(&self) -> bool {
+        self.kind == TextKind::Raw
+    }
+
+    /// Check if text is empty.
+    #[inline]
     pub fn is_empty(&self) -> bool {
         self.content.is_empty()
     }
 
-    /// Get text length in bytes
+    /// Get byte length.
     pub fn len(&self) -> usize {
         self.content.len()
     }
 
-    /// Check if text is only whitespace
+    /// Check if text is whitespace only.
     pub fn is_whitespace(&self) -> bool {
         self.content.trim().is_empty()
     }
 
-    /// Get trimmed content
+    /// Get trimmed content.
     pub fn trimmed(&self) -> &str {
         self.content.trim()
-    }
-}
-
-// Note: Frame<P> has been removed.
-// Typst frames are now eagerly converted to SVG Elements in convert.rs.
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::phase::Raw;
-
-    #[test]
-    fn test_text_node() {
-        let text: Text<Raw> = Text::new("  hello world  ");
-        assert!(!text.is_empty());
-        assert!(!text.is_whitespace());
-        assert_eq!(text.trimmed(), "hello world");
     }
 }

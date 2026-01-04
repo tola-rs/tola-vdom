@@ -1,218 +1,156 @@
 # tola-vdom
 
-**Type-safe · Multi-phase · Extensible**
+Type-safe Virtual DOM with multi-phase transformations.
 
-A virtual DOM library that leverages Rust's type system to guarantee correctness at compile time.  \
-(WIP, WIP, WIP, WIP, WIP!!!! Warning: WWWWWWWWWWWWWWiiIIIIIIIppppppppppp!!!!)
+> **Note**: This library is primarily designed for internal use by [tola-ssg](https://github.com/tola-rs/tola-ssg). While it can be used independently, the API is tailored for tola-ssg's hot reload and incremental update needs.
 
-> Extracted from [tola-ssg](https://github.com/tola-ssg/tola-ssg), a Typst-basedv static site generator written in Rust.
+## Overview
 
-## Why tola-vdom?
+tola-vdom provides a typed VDOM system with content-based identity tracking for efficient incremental updates:
 
-| Feature | Description |
-|---------|-------------|
-| **Type-safe** | Phase transitions and transform dependencies are checked at compile time. Invalid pipeline order = compile error. |
-| **Multi-phase** | Documents progress through `Raw → Indexed → Processed → Rendered` with phase-specific data attached. |
-| **Extensible** | TTG (Trees That Grow) pattern allows custom phases, capabilities, and family data without forking. |
+- **StableId**: Content-hash identity for each node
+- **Multi-phase pipeline**: Raw → Indexed → Processed
+- **Family system**: Type-safe element classification (Link, Heading, Svg, Media, custom)
+- **Efficient diffing**: Incremental updates with move detection
 
 ## Architecture
 
-### Three-tier State Model
-
 ```
-┌─────────────────────────────────────────────────────────────────┐
-│  Level 1: Phase (Memory Layout)                                 │
-│  Raw → Indexed → Processed → Rendered                           │
-├─────────────────────────────────────────────────────────────────┤
-│  Level 2: Capability (Processing Progress - Zero Overhead)      │
-│  LinksChecked, SvgOptimized, HeadingsProcessed, ...             │
-├─────────────────────────────────────────────────────────────────┤
-│  Level 3: Family State (Element-level Enum)                     │
-│  Link::Pending → Link::Resolved, Svg::Raw → Svg::Optimized      │
-└─────────────────────────────────────────────────────────────────┘
+  Document<Raw>          Document<Indexed>        Document<Processed>
+  ┌──────────────┐       ┌──────────────┐         ┌──────────┐
+  │ Parser output│──────▶│ StableId per │────────▶│ Ready to │
+  │ SourceSpan   │       │ node         │         │ render   │
+  └──────────────┘       │ **Cacheable**│         └──────────┘
+                         └──────────────┘                │
+                                │                        │
+                              diff()                  render()
+                                │                        │
+                                ▼                        ▼
+                         ┌────────────┐          HTML String
+                         │ PatchOp[]  │
+                         └────────────┘
 ```
 
-### Phase System
+## Usage
 
-Documents progress through well-defined phases:
+### Define Families
 
-| Phase | Description |
-|-------|-------------|
-| `Raw` | Parsed from source, no computed data |
-| `Indexed` | StableIds assigned, tag families identified |
-| `Processed` | Transforms applied, ready for rendering |
-| `Rendered` | Final output produced |
-
-### Capability System
-
-**Zero-cost compile-time dependency checking.** Wrong pipeline order = compile error.
+Use `#[vdom::families]` to define your site's element families:
 
 ```rust
-use tola_vdom::capability::*;
+use tola_vdom::families::{HeadingFamily, LinkFamily, MediaFamily, SvgFamily};
+use tola_vdom::vdom::{families, family, processed};
 
-// Built-in capability markers (zero-sized types, no runtime cost)
-// LinksCheckedCap, LinksResolvedCap, SvgOptimizedCap,
-// HeadingsProcessedCap, MediaProcessedCap, MetadataExtractedCap
-
-// ─────────────────────────────────────────────────────────────────────────────
-// #[requires] macro: declare what capabilities a function needs
-// ─────────────────────────────────────────────────────────────────────────────
-
-#[requires(C: LinksCheckedCap)]              // "I need links to be checked first"
-fn resolve_links<C>(doc: Doc<Indexed, C>) {
-    // Compiler guarantees LinksCheckedCap is present - safe to resolve!
+// Custom family with processed data
+#[processed(Math)]
+pub struct MathProcessed {
+    pub html: String,
 }
 
-#[requires(C: LinksCheckedCap, SvgOptimizedCap)]   // Multiple requirements
-fn final_render<C>(doc: Doc<Indexed, C>) {
-    // Both capabilities guaranteed present
+#[family(processed = MathProcessed)]
+pub struct Math {
+    pub formula: String,
+    pub display: bool,
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Pipeline: capabilities accumulate as transforms run
-// ─────────────────────────────────────────────────────────────────────────────
-
-let doc = Doc::new(indexed_doc);             // EmptyCap
-let doc = check_links(doc);                  // caps![LinksCheckedCap]
-let doc = optimize_svg(doc);                 // caps![SvgOptimizedCap, LinksCheckedCap]
-let doc = resolve_links(doc);                // ✓ OK: LinksCheckedCap present
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Wrong order? Compile error!
-// ─────────────────────────────────────────────────────────────────────────────
-
-let doc = Doc::new(indexed_doc);             // EmptyCap
-let doc = resolve_links(doc);                // ✗ ERROR!
-//        ^^^^^^^^^^^^^ capability `LinksCheckedCap` is required but not available
-//        note: try adding the appropriate Transform earlier in the pipeline
+// Combine all families
+#[families]
+pub struct MySite {
+    link: LinkFamily,
+    heading: HeadingFamily,
+    svg: SvgFamily,
+    media: MediaFamily,
+    math: MathFamily,  // custom
+}
 ```
 
-### Tag Families
+This generates:
+- Phase types: `MySite::Raw`, `MySite::Indexed`, `MySite::Processed`
+- Extension enums: `MySite::RawExt`, `MySite::IndexedExt`, `MySite::ProcessedExt`
+- Helper functions: `MySite::indexer()`, `MySite::processor()`, `MySite::identify()`, `MySite::element()`
 
-Elements are classified into families for specialized processing:
+### Pipeline
 
-| Family | Tags | Purpose |
-|--------|------|---------|
-| `Svg` | `svg` | Vector graphics with content hash |
-| `Link` | `a` | Internal/external link detection |
-| `Heading` | `h1`-`h6` | Table of contents generation |
-| `Media` | `img`, `video`, `audio` | Asset processing |
-| `Other` | Everything else | Pass-through |
+```rust
+use tola_vdom::prelude::*;
 
-## Features
+// Raw → Indexed → Processed
+let indexed = Pipeline::new(raw_doc)
+    .pipe(MySite::indexer().with_page_seed(PageSeed::from_path("/page")))
+    .pipe(LinkTransform::new(config))
+    .inspect(|doc| { /* inspect intermediate state */ })
+    .into_inner();
 
-- `typst` (default): Typst HTML document conversion
-- `serde`: Serialization support
-- `parallel`: Parallel processing with rayon
-- `hotreload`: WebSocket-based hot reload support
-- `rkyv`: Zero-copy serialization
+let processed = Pipeline::new(indexed)
+    .pipe(MySite::processor())
+    .into_inner();
+
+// Render to HTML
+let html = render_document(&processed, &RenderConfig::DEV);
+```
+
+### Diffing & Hot Reload
+
+```rust
+use tola_vdom::algo::diff;
+
+// Cache indexed VDOM
+let key = CacheKey::new("/page");
+cache.insert(key.clone(), CacheEntry::new(indexed.clone()));
+
+// On file change: diff and patch
+let result = diff(&cached.doc, &new_indexed);
+
+if result.should_reload {
+    // Full page reload needed
+} else if result.ops.is_empty() {
+    // No changes
+} else {
+    let patches = render_patches(&result.ops, &RenderConfig::DEV);
+    // Send patches via WebSocket
+}
+```
+
+### Persistence (rkyv)
+
+```rust
+use tola_vdom::serialize::{to_bytes, from_bytes};
+
+// Save to disk
+let bytes = to_bytes(&indexed_doc)?;
+fs::write("cache.vdom", bytes)?;
+
+// Restore from disk
+let bytes = fs::read("cache.vdom")?;
+let doc: Document<MySite::Indexed> = from_bytes(&bytes)?;
+```
 
 ## Modules
 
 | Module | Description |
 |--------|-------------|
-| `phase` | Phase trait and type definitions |
-| `node` | Document, Element, Text, Node types |
-| `family` | TagFamily trait and implementations |
-| `capability` | Compile-time capability system |
-| `attr` | Attribute storage |
-| `transform` | Transform trait and Pipeline |
-| `diff` | VDOM diff algorithm |
-| `lcs` | Longest Common Subsequence algorithm |
-| `id` | Content-hash based StableId |
-| `cache` | VDOM caching utilities |
-| `convert` | Typst HTML to Raw VDOM conversion |
+| `core` | Core traits: `Family`, `Phase`, `PhaseExt`, `HasStableId` |
+| `node` | Node types: `Document`, `Element`, `Text`, `Node` |
+| `families` | Built-in families: Link, Heading, Svg, Media |
+| `transform` | Pipeline: `Indexer`, `Processor`, `Transform` |
+| `algo` | Diff algorithm |
+| `render` | HTML rendering with optional stable IDs |
+| `cache` | Thread-safe VDOM cache |
+| `serialize` | rkyv serialization for persistence |
 
-## Usage
+## Feature Flags
 
-### Basic Pipeline
+| Feature | Default | Description |
+|---------|---------|-------------|
+| `cache` | ✓ | rkyv zero-copy serialization |
+| `macros` | ✓ | `#[vdom::families]` proc macro |
+| `async` | ✓ | Async validation pipeline |
+| `parallel` | | Rayon parallel batch operations |
 
-```rust
-use tola_vdom::{Document, Raw, Transform, Processor};
-use tola_vdom::transform::Indexer;
+## Requirements
 
-let raw: Document<Raw> = parse_html(source);
-let indexed = Indexer::new().transform(raw);
-let processed = Processor::new().transform(indexed);
-```
-
-### With Capabilities
-
-```rust
-use tola_vdom::capability::*;
-use tola_vdom::phase::Indexed;
-
-// Define a transform that provides a capability
-struct LinkChecker;
-
-impl<C: Capabilities> CapTransform<Indexed, C> for LinkChecker {
-    type Provides = LinksCheckedCap;
-    type Output = <C as AddCapability<LinksCheckedCap>>::Output;
-
-    fn cap_transform(self, doc: Doc<Indexed, C>) -> Doc<Indexed, Self::Output> {
-        // Check all links...
-        doc.add_capability::<LinksCheckedCap>()
-    }
-}
-
-// Define a transform that requires a capability
-struct LinkResolver;
-
-impl<C, I> CapTransform<Indexed, C> for LinkResolver
-where
-    C: HasCapability<LinksCheckedCap, I>,  // Requires links to be checked first
-{
-    type Provides = LinksResolvedCap;
-    type Output = <C as AddCapability<LinksResolvedCap>>::Output;
-
-    fn cap_transform(self, doc: Doc<Indexed, C>) -> Doc<Indexed, Self::Output> {
-        // Resolve links (safe because they're already checked)
-        doc.add_capability::<LinksResolvedCap>()
-    }
-}
-
-// Usage: Pipeline with compile-time dependency checking
-let doc: Doc<Indexed, ()> = Doc::new(indexed_doc);
-let doc = LinkChecker.cap_transform(doc);     // Now has LinksCheckedCap
-let doc = LinkResolver.cap_transform(doc);    // OK: LinksCheckedCap is present
-
-// This would NOT compile:
-// let doc: Doc<Indexed, ()> = Doc::new(indexed_doc);
-// let doc = LinkResolver.cap_transform(doc);  // ERROR: missing LinksCheckedCap
-```
-
-### Diffing
-
-```rust
-use tola_vdom::{diff, Patch};
-
-let patches = diff(&old_doc, &new_doc);
-for patch in patches {
-    match patch {
-        Patch::Insert { .. } => { /* handle */ }
-        Patch::Remove { .. } => { /* handle */ }
-        Patch::Replace { .. } => { /* handle */ }
-        Patch::UpdateAttrs { .. } => { /* handle */ }
-    }
-}
-```
-
-### User-defined Capabilities
-
-```rust
-use tola_vdom::capability::UserCapability;
-
-// Define your own capability
-struct MyCustomCap;
-
-impl UserCapability for MyCustomCap {
-    const NAME: &'static str = "MyCustom";
-}
-
-// Now usable in capability bounds
-#[requires(C: MyCustomCap)]
-fn needs_custom<C>(doc: Doc<Indexed, C>) { ... }
-```
+- Rust 1.85+ (Edition 2024)
+- Uses GATs (Generic Associated Types)
 
 ## License
 

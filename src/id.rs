@@ -40,9 +40,11 @@ use std::hash::Hash;
 ///
 /// # Creation
 ///
-/// ```ignore
+/// ```
+/// use tola_vdom::id::PageSeed;
+///
 /// let seed = PageSeed::from_path("/blog/post.html");
-/// let indexed = Indexer::new().with_page_seed(seed).transform(raw_doc);
+/// assert_ne!(seed, PageSeed::zero());
 /// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub struct PageSeed(pub u64);
@@ -50,7 +52,7 @@ pub struct PageSeed(pub u64);
 impl PageSeed {
     /// Create a PageSeed from a page path
     pub fn from_path(path: &str) -> Self {
-        use crate::hash::StableHasher;
+        use crate::algo::StableHasher;
         Self(StableHasher::new()
             .update_str("__page__")
             .update_str(path)
@@ -86,15 +88,16 @@ impl PageSeed {
 /// - Copy, no heap allocation
 /// - Null-optimized: `Option<StableId>` is also 8 bytes
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
-pub struct StableId(pub u64);
+#[must_use]
+pub struct StableId(pub(crate) u64);
 
 impl StableId {
-    /// Create a StableId from a raw u64 value
+    /// Create a StableId from a raw u64 value.
     ///
-    /// # Safety Note
+    /// # Usage
     ///
-    /// This is primarily for deserialization. Prefer `from_span()` or
-    /// `from_content_hash()` for creating new IDs.
+    /// This method is primarily intended for deserialization from cache.
+    /// Prefer `for_element()` or `for_text()` for creating new IDs.
     #[inline]
     pub const fn from_raw(raw: u64) -> Self {
         Self(raw)
@@ -139,14 +142,14 @@ impl StableId {
     /// ```ignore
     /// let id = StableId::for_element("div", &attrs, &child_ids, 0);
     /// ```
-    pub fn for_element(
+    pub fn for_element<K: AsRef<str>, V: AsRef<str>>(
         tag: &str,
-        attrs: &[(String, String)],
+        attrs: &[(K, V)],
         _children: &[StableId],
         occurrence: usize,
         parent_seed: u64,
     ) -> Self {
-        use crate::hash::StableHasher;
+        use crate::algo::StableHasher;
 
         let mut hasher = StableHasher::new()
             .update_u64(parent_seed)
@@ -154,6 +157,8 @@ impl StableId {
 
         // Hash ONLY key attributes (id, key, data-key-*) for stable identity
         for (k, v) in attrs {
+            let k = k.as_ref();
+            let v = v.as_ref();
             if k == "id" || k == "key" || k.starts_with("data-key") {
                 hasher = hasher.update_str(k).update_str(v);
             }
@@ -188,7 +193,7 @@ impl StableId {
     /// - With position only: "Hello" → "World" is recognized as Keep + UpdateText
     #[inline]
     pub fn for_text(occurrence: usize, parent_seed: u64) -> Self {
-        use crate::hash::StableHasher;
+        use crate::algo::StableHasher;
 
         Self(StableHasher::new()
             .update_u64(parent_seed)
@@ -205,7 +210,7 @@ impl StableId {
     /// * `occurrence` - How many same-frame_id siblings appeared before this one
     #[inline]
     pub fn for_frame(frame_id: usize, occurrence: usize, parent_seed: u64) -> Self {
-        use crate::hash::StableHasher;
+        use crate::algo::StableHasher;
 
         Self(StableHasher::new()
             .update_u64(parent_seed)
@@ -213,23 +218,6 @@ impl StableId {
             .update_usize(frame_id)
             .update_usize(occurrence)
             .finish())
-    }
-
-    /// Create from content hash (legacy API, kept for compatibility)
-    ///
-    /// # Deprecated
-    /// Use `for_element()` instead which includes position for disambiguation.
-    pub fn from_content_hash(tag: &str, attrs: &[(String, String)], children: &[StableId]) -> Self {
-        Self::for_element(tag, attrs, children, 0, 0)
-    }
-
-    /// Create from text content (legacy API, kept for compatibility)
-    ///
-    /// # Deprecated
-    /// Use `for_text()` instead - text IDs no longer include content.
-    #[allow(unused_variables)]
-    pub fn from_text_content(content: &str) -> Self {
-        Self::for_text(0, 0)
     }
 
     /// Create a detached/placeholder ID
@@ -276,7 +264,7 @@ impl Default for StableId {
 
 // rkyv 0.8 requires derive macros for proper trait implementation.
 // We use a simple newtype wrapper that derives all necessary traits.
-#[cfg(feature = "rkyv")]
+#[cfg(feature = "cache")]
 mod rkyv_impl {
     use super::StableId;
 
@@ -307,7 +295,7 @@ mod rkyv_impl {
     }
 }
 
-#[cfg(feature = "rkyv")]
+#[cfg(feature = "cache")]
 pub use rkyv_impl::{ArchivedStableIdWrapper, StableIdWrapper};
 
 // =============================================================================
@@ -326,26 +314,24 @@ mod tests {
     }
 
     #[test]
-    fn test_content_hash_deterministic() {
+    fn test_for_element_deterministic() {
         let attrs = vec![("class".to_string(), "foo".to_string())];
-        let children = vec![StableId::from_raw(1), StableId::from_raw(2)];
 
-        let id1 = StableId::from_content_hash("div", &attrs, &children);
-        let id2 = StableId::from_content_hash("div", &attrs, &children);
+        let id1 = StableId::for_element("div", &attrs, &[], 0, 0);
+        let id2 = StableId::for_element("div", &attrs, &[], 0, 0);
 
         assert_eq!(id1, id2);
     }
 
     #[test]
-    fn test_content_hash_differs() {
+    fn test_for_element_differs_by_key_attr() {
         // Use key attributes (id, key) to test hash difference
         // Note: class is NOT a key attribute, so it won't affect hash
         let attrs1 = vec![("id".to_string(), "foo".to_string())];
         let attrs2 = vec![("id".to_string(), "bar".to_string())];
-        let children: Vec<StableId> = vec![];
 
-        let id1 = StableId::from_content_hash("div", &attrs1, &children);
-        let id2 = StableId::from_content_hash("div", &attrs2, &children);
+        let id1 = StableId::for_element("div", &attrs1, &[], 0, 0);
+        let id2 = StableId::for_element("div", &attrs2, &[], 0, 0);
 
         assert_ne!(id1, id2);
     }
@@ -356,10 +342,9 @@ mod tests {
         // Changing them should NOT change the StableId
         let attrs1 = vec![("class".to_string(), "foo".to_string())];
         let attrs2 = vec![("class".to_string(), "bar".to_string())];
-        let children: Vec<StableId> = vec![];
 
-        let id1 = StableId::from_content_hash("div", &attrs1, &children);
-        let id2 = StableId::from_content_hash("div", &attrs2, &children);
+        let id1 = StableId::for_element("div", &attrs1, &[], 0, 0);
+        let id2 = StableId::for_element("div", &attrs2, &[], 0, 0);
 
         // Same ID because class is not a key attribute!
         assert_eq!(id1, id2, "class attr should not affect StableId");
