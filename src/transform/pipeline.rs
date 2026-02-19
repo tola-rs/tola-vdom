@@ -416,9 +416,7 @@ mod async_impl {
             let results = join_all(self.pending).await;
 
             for result in results {
-                if let Err(e) = result {
-                    return Err(e);
-                }
+                result?;
             }
 
             Ok(self.inner.into_inner())

@@ -244,6 +244,22 @@ impl<P: PhaseExt> PatchOp<P> {
             Self::UpdateAttrs { target, .. } => *target,
         }
     }
+
+    /// Get a short summary of the operation (for debug logging)
+    pub fn summary(&self) -> String {
+        match self {
+            Self::Replace { target, .. } => format!("Replace({})", target),
+            Self::UpdateText { target, .. } => format!("Text({})", target),
+            Self::ReplaceChildren { target, .. } => format!("Children({})", target),
+            Self::Remove { target } => format!("Remove({})", target),
+            Self::Insert { anchor, .. } => format!("Insert({:?})", anchor),
+            Self::Move { target, to } => format!("Move({}->{:?})", target, to),
+            Self::UpdateAttrs { target, changes } => {
+                let keys: Vec<&str> = changes.iter().map(|(k, _)| k.as_str()).collect();
+                format!("Attrs({},{:?})", target, keys)
+            }
+        }
+    }
 }
 
 // =============================================================================

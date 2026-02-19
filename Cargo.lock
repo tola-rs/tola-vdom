@@ -532,7 +532,7 @@ dependencies = [
 
 [[package]]
 name = "tola-vdom"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "blake3",
  "compact_str",

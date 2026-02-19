@@ -117,7 +117,7 @@ where
         .map_err(|e| format!("Failed to access archived data: {}", e))?;
 
     // Validate magic bytes
-    let magic: [u8; 4] = archived.magic.into();
+    let magic: [u8; 4] = archived.magic;
     if magic != MAGIC {
         return Err(format!(
             "Invalid cache file: expected magic {:?}, got {:?}",
